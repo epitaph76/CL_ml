@@ -29,7 +29,7 @@ def _parse_args() -> TokenizeConfig:
         "--input-root",
         type=Path,
         required=True,
-        help="Root folder with audio files (recursive scan).",
+        help="Folder with audio files (recursive) or a single audio file path.",
     )
     parser.add_argument(
         "--output-root",
@@ -101,24 +101,37 @@ def _sanitize_part(part: str) -> str:
 
 
 def build_track_id(path: Path, input_root: Path) -> str:
-    rel = path.relative_to(input_root).with_suffix("")
+    try:
+        rel = path.relative_to(input_root).with_suffix("")
+    except ValueError:
+        rel = path.with_suffix("")
     pieces = [_sanitize_part(piece) for piece in rel.parts]
     return "__".join(pieces)
 
 
 def discover_audio_files(
     input_root: Path, extensions: Sequence[str], max_files: int | None
-) -> list[Path]:
+) -> tuple[list[Path], Path]:
     ext_set = set(extensions)
-    audio_files = [
-        path
-        for path in input_root.rglob("*")
-        if path.is_file() and path.suffix.lower() in ext_set
-    ]
+    if input_root.is_file():
+        if input_root.suffix.lower() not in ext_set:
+            raise RuntimeError(
+                f"File extension {input_root.suffix} is not in allowed extensions: {tuple(sorted(ext_set))}"
+            )
+        audio_files = [input_root]
+        scan_root = input_root.parent
+    else:
+        audio_files = [
+            path
+            for path in input_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in ext_set
+        ]
+        scan_root = input_root
+
     audio_files.sort()
     if max_files is not None:
-        return audio_files[:max_files]
-    return audio_files
+        audio_files = audio_files[:max_files]
+    return audio_files, scan_root
 
 
 def _resolve_device(device_flag: str):
@@ -189,10 +202,11 @@ def _save_payload(out_path: Path, payload: dict, save_format: str) -> None:
 def _iter_missing_outputs(
     audio_files: Iterable[Path],
     config: TokenizeConfig,
+    scan_root: Path,
 ) -> list[Path]:
     selected: list[Path] = []
     for path in audio_files:
-        track_id = build_track_id(path, config.input_root)
+        track_id = build_track_id(path, scan_root)
         out_stem = config.output_root / track_id
         target_path = out_stem.with_suffix(f".{config.save_format}")
         if not config.overwrite and target_path.exists():
@@ -239,13 +253,15 @@ def run_tokenization(config: TokenizeConfig) -> None:
         raise FileNotFoundError(f"Input folder does not exist: {config.input_root}")
 
     device = _resolve_device(config.device)
-    audio_files = discover_audio_files(config.input_root, config.extensions, config.max_files)
+    audio_files, scan_root = discover_audio_files(
+        config.input_root, config.extensions, config.max_files
+    )
     if not audio_files:
         raise RuntimeError(
             f"No files found in {config.input_root} for extensions: {config.extensions}"
         )
 
-    audio_files = _iter_missing_outputs(audio_files, config)
+    audio_files = _iter_missing_outputs(audio_files, config, scan_root)
     if not audio_files:
         print("Nothing to tokenize: all files already processed.")
         return
@@ -258,7 +274,7 @@ def run_tokenization(config: TokenizeConfig) -> None:
 
     total_chunks = 0
     for audio_path in tqdm(audio_files, desc="Tokenizing", unit="track"):
-        track_id = build_track_id(audio_path, config.input_root)
+        track_id = build_track_id(audio_path, scan_root)
         waveform, _ = _load_audio(audio_path, target_sr)
         chunks = _split_waveform(waveform, target_sr, config.chunk_seconds)
         duration_sec = float(waveform.shape[0] / target_sr)
