@@ -153,12 +153,11 @@ def _resolve_device(device_flag: str):
 
 
 def _load_moss(model_id: str, device):
-    from transformers import AutoModel, AutoProcessor
+    from transformers import AutoModel
 
-    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
     model = AutoModel.from_pretrained(model_id, trust_remote_code=True).to(device)
     model.eval()
-    return processor, model
+    return model
 
 
 def _load_audio(path: Path, target_sr: int):
@@ -299,8 +298,12 @@ def run_tokenization(config: TokenizeConfig) -> None:
 
     print(f"Found {len(audio_files)} file(s) to tokenize.")
     print(f"Device: {device}")
-    processor, model = _load_moss(config.model_id, device)
-    target_sr = int(processor.feature_extractor.sampling_rate)
+    model = _load_moss(config.model_id, device)
+    target_sr = int(
+        getattr(model, "sampling_rate", None)
+        or getattr(getattr(model, "config", None), "sampling_rate", None)
+        or 24000
+    )
     print(f"MOSS target sample rate: {target_sr}")
 
     total_chunks = 0
@@ -313,22 +316,15 @@ def run_tokenization(config: TokenizeConfig) -> None:
             duration_sec = float(waveform.shape[0] / target_sr)
 
             for chunk_index, chunk_waveform in enumerate(chunks):
-                inputs = processor(
-                    [chunk_waveform.numpy()],
-                    sampling_rate=target_sr,
-                    return_tensors="pt",
-                )
-                input_values = inputs.input_values.to(device)
-                padding_mask = (
-                    inputs.padding_mask.to(device)
-                    if hasattr(inputs, "padding_mask")
-                    else torch.ones_like(input_values, dtype=torch.long, device=device)
+                input_values = chunk_waveform.unsqueeze(0).unsqueeze(0).to(device)
+                padding_mask = torch.ones(
+                    (1, chunk_waveform.shape[0]), dtype=torch.long, device=device
                 )
                 with torch.inference_mode():
                     codes = model.encode(
                         input_values=input_values,
                         padding_mask=padding_mask,
-                        return_dict=False,
+                        return_dict=True,
                     )
 
                 tokens = _extract_codes(codes).detach().cpu()
