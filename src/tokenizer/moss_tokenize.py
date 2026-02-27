@@ -19,6 +19,7 @@ class TokenizeConfig:
     max_files: int | None
     overwrite: bool
     save_format: str
+    fail_fast: bool
 
 
 def _parse_args() -> TokenizeConfig:
@@ -81,6 +82,11 @@ def _parse_args() -> TokenizeConfig:
         default="pt",
         help="Token storage format.",
     )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="Stop on first failed file instead of skipping and continuing.",
+    )
     args = parser.parse_args()
 
     return TokenizeConfig(
@@ -93,11 +99,13 @@ def _parse_args() -> TokenizeConfig:
         max_files=args.max_files,
         overwrite=args.overwrite,
         save_format=args.save_format,
+        fail_fast=args.fail_fast,
     )
 
 
 def _sanitize_part(part: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_-]+", "_", part)
+    cleaned = re.sub(r"[^\w-]+", "_", part, flags=re.UNICODE).strip("_")
+    return cleaned if cleaned else "untitled"
 
 
 def build_track_id(path: Path, input_root: Path) -> str:
@@ -157,7 +165,30 @@ def _load_audio(path: Path, target_sr: int):
     import torch
     import torchaudio
 
-    waveform, sample_rate = torchaudio.load(path)
+    try:
+        waveform, sample_rate = torchaudio.load(path)
+    except Exception as torchaudio_exc:
+        # Fallback path for environments where torchaudio backend lacks mp3 support.
+        try:
+            import librosa
+        except Exception as import_exc:
+            raise RuntimeError(
+                f"Failed to load audio via torchaudio for {path}. "
+                f"Also failed to import librosa fallback: {import_exc}"
+            ) from torchaudio_exc
+
+        try:
+            audio, _ = librosa.load(path, sr=target_sr, mono=True)
+        except Exception as librosa_exc:
+            raise RuntimeError(
+                f"Failed to load audio file: {path}\n"
+                f"torchaudio error: {torchaudio_exc}\n"
+                f"librosa error: {librosa_exc}"
+            ) from librosa_exc
+
+        waveform = torch.from_numpy(audio).unsqueeze(0).to(torch.float32)
+        sample_rate = target_sr
+
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
     if sample_rate != target_sr:
@@ -273,50 +304,66 @@ def run_tokenization(config: TokenizeConfig) -> None:
     print(f"MOSS target sample rate: {target_sr}")
 
     total_chunks = 0
+    failed_files: list[tuple[Path, str]] = []
     for audio_path in tqdm(audio_files, desc="Tokenizing", unit="track"):
-        track_id = build_track_id(audio_path, scan_root)
-        waveform, _ = _load_audio(audio_path, target_sr)
-        chunks = _split_waveform(waveform, target_sr, config.chunk_seconds)
-        duration_sec = float(waveform.shape[0] / target_sr)
+        try:
+            track_id = build_track_id(audio_path, scan_root)
+            waveform, _ = _load_audio(audio_path, target_sr)
+            chunks = _split_waveform(waveform, target_sr, config.chunk_seconds)
+            duration_sec = float(waveform.shape[0] / target_sr)
 
-        for chunk_index, chunk_waveform in enumerate(chunks):
-            inputs = processor(
-                [chunk_waveform.numpy()],
-                sampling_rate=target_sr,
-                return_tensors="pt",
-            )
-            input_values = inputs.input_values.to(device)
-            padding_mask = (
-                inputs.padding_mask.to(device)
-                if hasattr(inputs, "padding_mask")
-                else torch.ones_like(input_values, dtype=torch.long, device=device)
-            )
-            with torch.inference_mode():
-                codes = model.encode(
-                    input_values=input_values,
-                    padding_mask=padding_mask,
-                    return_dict=False,
+            for chunk_index, chunk_waveform in enumerate(chunks):
+                inputs = processor(
+                    [chunk_waveform.numpy()],
+                    sampling_rate=target_sr,
+                    return_tensors="pt",
                 )
+                input_values = inputs.input_values.to(device)
+                padding_mask = (
+                    inputs.padding_mask.to(device)
+                    if hasattr(inputs, "padding_mask")
+                    else torch.ones_like(input_values, dtype=torch.long, device=device)
+                )
+                with torch.inference_mode():
+                    codes = model.encode(
+                        input_values=input_values,
+                        padding_mask=padding_mask,
+                        return_dict=False,
+                    )
 
-            tokens = _extract_codes(codes).detach().cpu()
-            output_stem = config.output_root / track_id
-            if config.chunk_seconds:
-                output_stem = config.output_root / f"{track_id}__chunk{chunk_index:04d}"
+                tokens = _extract_codes(codes).detach().cpu()
+                output_stem = config.output_root / track_id
+                if config.chunk_seconds:
+                    output_stem = config.output_root / f"{track_id}__chunk{chunk_index:04d}"
 
-            payload = {
-                "track_id": track_id,
-                "source_path": str(audio_path),
-                "sample_rate": target_sr,
-                "duration_sec": duration_sec,
-                "chunk_index": chunk_index,
-                "num_chunks": len(chunks),
-                "token_shape": list(tokens.shape),
-                "tokens": tokens,
-            }
-            _save_payload(output_stem, payload, config.save_format)
-            total_chunks += 1
+                payload = {
+                    "track_id": track_id,
+                    "source_path": str(audio_path),
+                    "sample_rate": target_sr,
+                    "duration_sec": duration_sec,
+                    "chunk_index": chunk_index,
+                    "num_chunks": len(chunks),
+                    "token_shape": list(tokens.shape),
+                    "tokens": tokens,
+                }
+                _save_payload(output_stem, payload, config.save_format)
+                total_chunks += 1
+        except Exception as exc:
+            failed_files.append((audio_path, str(exc)))
+            print(f"[WARN] Failed to tokenize {audio_path}: {exc}")
+            if config.fail_fast:
+                raise
 
     print(f"Done. Saved {total_chunks} token file(s) into: {config.output_root}")
+    if failed_files:
+        print(f"Skipped {len(failed_files)} file(s) due to errors.")
+        for path, reason in failed_files[:10]:
+            print(f"  - {path}: {reason}")
+        if len(failed_files) > 10:
+            print(f"  ... and {len(failed_files) - 10} more")
+
+    if total_chunks == 0 and failed_files:
+        raise RuntimeError("All files failed during tokenization. See warnings above.")
 
 
 def main() -> None:

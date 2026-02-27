@@ -116,11 +116,12 @@ python -m src.dataset.build_splits --tokens-root data/tokens --output-root data/
 
 Он:
 
-- сканирует аудио в `--input-root`
+- сканирует аудио в `--input-root` (папка или одиночный файл)
 - грузит MOSS tokenizer из HuggingFace
 - приводит аудио к sample rate модели
 - токенизирует трек (или чанки)
 - сохраняет токены в `data/tokens` (`.pt` или `.npz`)
+- при проблемных файлах выводит warning и продолжает (или `--fail-fast` для остановки)
 
 ### Зачем это нужно
 
