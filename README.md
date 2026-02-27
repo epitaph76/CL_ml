@@ -56,6 +56,8 @@ python -m src.dataset.build_splits --help
 - Ноутбук в репозитории: `notebooks/01_moss_tokenization_colab.ipynb`
 - Прямой линк для запуска в Colab:
   `https://colab.research.google.com/github/epitaph76/CL_ml/blob/main/notebooks/01_moss_tokenization_colab.ipynb`
+- Если видите `ModuleNotFoundError: No module named 'src'`, значит запуск идёт не из корня репозитория.
+  В ноутбуке это уже исправлено через `cwd=/content/CL_ml` в `subprocess.run(...)`.
 
 ## Текущая структура
 
