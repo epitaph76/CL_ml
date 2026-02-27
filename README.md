@@ -4,11 +4,12 @@
 
 ## Статус на сейчас
 
-Сделан старт по Этапам 0-2:
+Сделан старт по Этапам 0-3:
 
 - Этап 0: подготовлен каркас проекта, зависимости и конфиги.
 - Этап 1: добавлен скрипт формирования `train/val/test` сплитов.
 - Этап 2: добавлен рабочий CLI для токенизации аудио через MOSS.
+- Этап 3: добавлен `TokenPairDataset` с аугментациями и `collate` с padding/mask.
 
 MOSS модель: https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer/tree/main
 
@@ -66,6 +67,8 @@ CL_ml/
       moss_tokenize.py
     dataset/
       build_splits.py
+      augmentations.py
+      token_dataset.py
     model/
     train/
     index/
@@ -141,7 +144,26 @@ PowerShell shortcut:
 
 ## Ближайшие цели (следующие шаги)
 
-1. Добавить `TokenDataset` + аугментации (`src/dataset/token_dataset.py`, `src/dataset/augmentations.py`).
-2. Реализовать baseline-модель `tokens -> embedding` (`src/model/embedder.py`).
-3. Запустить первое контрастивное обучение в Colab и сохранить checkpoint.
-4. Сделать базовую offline оценку retrieval (`Recall@10/100`).
+1. Реализовать baseline-модель `tokens -> embedding` (`src/model/embedder.py`).
+2. Запустить первое контрастивное обучение в Colab и сохранить checkpoint.
+3. Сделать базовую offline оценку retrieval (`Recall@10/100`).
+4. Добавить FAISS baseline и сравнение exact vs ANN.
+
+## Связка с вакансией Ozon
+
+Что важно в вакансии и как это отражено в проекте:
+
+- GPU векторный движок: реализуем retrieval-pipeline с метриками latency/throughput и FAISS/ANN.
+- Оптимизация инференса на GPU: отдельный этап с batch inference, FP16 и p50/p95 замерами.
+- Деплой моделей в прод: FastAPI baseline и отдельный этап под Triton Inference Server.
+- Работа с большими данными/пайплайнами: план на Airflow DAG для автоматизации tokenization -> training -> indexing.
+- Python/PyTorch: основной код проекта уже строится вокруг этого стека.
+
+## Учебный фокус под стажировку (приоритет)
+
+1. Retrieval-метрики и эксперименты: `Recall@K`, `MRR`, честные валидационные сплиты.
+2. GPU-inference: батчинг, профилирование bottleneck, сравнение fp32/fp16.
+3. Triton: экспорт модели + динамический батчинг + бенчмарк.
+4. Airflow + SQL: минимальный DAG и простые SQL-выборки для отчётности по метрикам.
+
+Детальный план: `docs/ozon_prep_plan.md`.
