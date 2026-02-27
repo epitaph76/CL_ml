@@ -51,6 +51,12 @@ python -m src.tokenizer.moss_tokenize --help
 python -m src.dataset.build_splits --help
 ```
 
+### 3) Готовый Colab-ноутбук
+
+- Ноутбук в репозитории: `notebooks/01_moss_tokenization_colab.ipynb`
+- Прямой линк для запуска в Colab:
+  `https://colab.research.google.com/github/epitaph76/CL_ml/blob/main/notebooks/01_moss_tokenization_colab.ipynb`
+
 ## Текущая структура
 
 ```text
@@ -62,6 +68,8 @@ CL_ml/
   configs/
     train.yaml
     index.yaml
+  notebooks/
+    01_moss_tokenization_colab.ipynb
   src/
     tokenizer/
       moss_tokenize.py
