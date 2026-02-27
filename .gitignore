@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Data and artifacts
+data/raw_audio/
+data/tokens/
+data/splits/
+artifacts/
+checkpoints/
+logs/
+
+# Model weights and indexes
+*.pt
+*.pth
+*.onnx
+*.index
+*.faiss
+

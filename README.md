@@ -1,10 +1,20 @@
-# CL_ml: Audio Retrieval для CloudTune
+﻿# CL_ml: Audio Retrieval для CloudTune
 
-Репозиторий для ML-части плеера CloudTune: от токенов аудио до retrieval-сервиса с поиском похожих треков.
+Репозиторий для ML-части плеера CloudTune: от токенизации аудио до retrieval-поиска похожих треков.
+
+## Статус на сейчас
+
+Сделан старт по Этапам 0-2:
+
+- Этап 0: подготовлен каркас проекта, зависимости и конфиги.
+- Этап 1: добавлен скрипт формирования `train/val/test` сплитов.
+- Этап 2: добавлен рабочий CLI для токенизации аудио через MOSS.
+
+MOSS модель: https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer/tree/main
 
 ## Цель проекта
 
-Собрать практичный retrieval pipeline (как mini production):
+Собрать практичный retrieval pipeline:
 
 1. Аудио -> токены (MOSS-Audio-Tokenizer)
 2. Токены -> embedding-вектора (своя модель)
@@ -18,154 +28,120 @@
 
 - Основная машина: ноутбук
 - Обучение модели: преимущественно в Google Colab
-- Локально: подготовка кода, запуск сервиса, лёгкие тесты, инференс/индексация
+- Локально: подготовка данных, скрипты, сервис, лёгкие проверки
 
-## Целевая архитектура
+## Быстрый старт (Этап 0)
 
-### Offline (подготовка данных/индекса)
+Рекомендуемая версия Python: `3.10-3.12`.
 
-- MP3 -> MOSS токены
-- Обучение embedder модели на токенах
-- Прогон корпуса в embedding-вектора
-- Сборка индекса FAISS
-- Публикация артефактов (модель + индекс)
+Важно: на этой машине сейчас `Python 3.14.3`, а часть ML-библиотек может не иметь стабильных wheel для 3.14.
+Для работы лучше использовать Colab (`Python 3.10`) или локально поставить 3.11/3.12.
 
-### Online (интеграция с плеером)
+### 1) Установка зависимостей
 
-- Вход: `track_id` или аудио
-- Расчёт embedding
-- Поиск соседей в ANN-индексе
-- Возврат top-K похожих треков (+ фильтры)
+```bash
+pip install -r requirements.txt
+```
 
-## Плановая структура репозитория
+### 2) Проверка CLI
+
+```bash
+python -m src.tokenizer.moss_tokenize --help
+python -m src.dataset.build_splits --help
+```
+
+## Текущая структура
 
 ```text
-audio-retrieval/
+CL_ml/
   README.md
-  pyproject.toml / requirements.txt
+  pyproject.toml
+  requirements.txt
+  .gitignore
   configs/
     train.yaml
     index.yaml
-    triton_model_config.pbtxt
-  data/
-    raw_audio/
-    tokens/
-    splits/
   src/
     tokenizer/
       moss_tokenize.py
     dataset/
-      token_dataset.py
-      augmentations.py
+      build_splits.py
     model/
-      embedder.py
-      losses.py
     train/
-      train_contrastive.py
-      eval_retrieval.py
     index/
-      build_faiss.py
-      search_faiss.py
-      eval_latency.py
     service/
-      api.py
-      schemas.py
-      settings.py
-  triton/
-    model_repository/
-  airflow/
-    dags/
-      pipeline.py
   scripts/
+    run_tokenize.ps1
 ```
 
-## Роадмап (этапы)
+## Этап 1: Данные и сплиты
 
-### Этап 0. Подготовка окружения (0.5-1 день)
+### Что сделано
 
-- Python 3.10-3.12
-- PyTorch + базовые зависимости (`numpy`, `torchaudio`, `faiss`, `fastapi`, `uvicorn`)
-- Установка зависимостей MOSS-токенизатора
-- Готовность: `python -m src.tokenizer.moss_tokenize --help`
+Скрипт: `src/dataset/build_splits.py`
 
-### Этап 1. Данные и постановка retrieval-задачи (1 день)
+Он:
 
-- Определить позитивы: один трек + его аугментации
-- Негативы: другие треки в батче
-- Сделать `train/val/test` сплиты
+- читает токены из `data/tokens`
+- собирает уникальные `track_id`
+- создаёт `train.txt`, `val.txt`, `test.txt` в `data/splits`
+- пишет `summary.json` с размерами сплитов
 
-### Этап 2. Оффлайн токенизация MOSS (1-2 дня)
+### Зачем это нужно
 
-- Скрипт MP3 -> токены, сохранение в `data/tokens/`
-- Токенизация выполняется один раз, дальше переиспользуется
-- Логирование времени токенизации
+Без корректного разделения на train/val/test нельзя честно измерять retrieval-качество.
 
-### Этап 3. Датасет и загрузка батчей (0.5-1 день)
+### Запуск
 
-- `Dataset` возвращает `tokens_a`, `tokens_b`, `track_id`
-- Padding/mask для переменной длины
-- `DataLoader` с рабочими батчами
+```bash
+python -m src.dataset.build_splits --tokens-root data/tokens --output-root data/splits --val-ratio 0.1 --test-ratio 0.1
+```
 
-### Этап 4. Модель `tokens -> embedding` (1-2 дня)
+## Этап 2: Оффлайн токенизация MOSS
 
-- Token embedding -> Transformer Encoder -> pooling -> projection
-- Размер embedding: 256/512
-- L2-нормализация для cosine similarity
+### Что сделано
 
-### Этап 5. Contrastive обучение (2-4 дня)
+Скрипт: `src/tokenizer/moss_tokenize.py`
 
-- InfoNCE / NT-Xent
-- Логи: train loss, val Recall@K, speed
-- Сохранение checkpoint и кривых обучения
+Он:
 
-### Этап 6. Retrieval оценка (1 день)
+- сканирует аудио в `--input-root`
+- грузит MOSS tokenizer из HuggingFace
+- приводит аудио к sample rate модели
+- токенизирует трек (или чанки)
+- сохраняет токены в `data/tokens` (`.pt` или `.npz`)
 
-- Query: аугментированный кусок трека
-- Target: попадание того же `track_id` в top-K
-- Метрики: Recall@1/10/100, опционально MRR
+### Зачем это нужно
 
-### Этап 7. Индексация и trade-off (1-2 дня)
+Токенизация — тяжёлая операция. Её делаем оффлайн один раз и дальше обучаем/индексируем уже по готовым токенам.
 
-- Baseline: `IndexFlatIP` (точный поиск)
-- ANN: IVF (+ PQ опционально)
-- Сравнение: latency vs recall
+### Запуск
 
-### Этап 8. API сервис (1-2 дня)
+```bash
+python -m src.tokenizer.moss_tokenize --input-root data/raw_audio --output-root data/tokens --device auto
+```
 
-- `POST /embed`
-- `GET /search?track_id=...&k=...`
-- `POST /search_by_audio`
-- `GET /health`
+С ограничением для smoke-теста:
 
-### Этап 9. Оптимизация инференса (1-2 дня)
+```bash
+python -m src.tokenizer.moss_tokenize --input-root data/raw_audio --output-root data/tokens --max-files 10
+```
 
-- Batch inference
-- FP16 (при CUDA)
-- Профилирование bottleneck
-- Бенчмарки p50/p95 + throughput
+С чанкованием треков:
 
-### Этап 10. Triton (опционально, 2-4 дня)
+```bash
+python -m src.tokenizer.moss_tokenize --input-root data/raw_audio --output-root data/tokens --chunk-seconds 8
+```
 
-- Экспорт модели (ONNX/TorchScript)
-- Dynamic batching, instance groups
-- Сравнение производительности с FastAPI
+PowerShell shortcut:
 
-### Этап 11. Airflow пайплайн (опционально, 1-3 дня)
+```powershell
+./scripts/run_tokenize.ps1 -InputRoot data/raw_audio -OutputRoot data/tokens -Device auto -MaxFiles 10
+```
 
-- DAG: tokenize -> train -> export -> embed_corpus -> build_index -> publish
+## Ближайшие цели (следующие шаги)
 
-## Ближайшие цели (следующие 7-10 дней)
-
-1. Поднять каркас репозитория (`src/`, `configs/`, `scripts/`, `data/`).
-2. Добавить рабочий `moss_tokenize.py` и прогнать токенизацию на маленьком наборе треков.
-3. Зафиксировать формат токенов и сплиты (`train/val/test`).
-4. Реализовать `TokenDataset` + аугментации + первый `DataLoader`.
-5. Сделать baseline embedder и dry-run обучения на Colab (1-2 эпохи).
-6. Посчитать первые offline-метрики retrieval (Recall@10/100) на маленьком тесте.
-
-## Критерии готовности MVP
-
-- Есть end-to-end pipeline: MP3 -> токены -> embedding -> top-K поиск
-- Есть базовые метрики качества и задержки
-- Есть API endpoint для “похожих треков”
-- Есть план следующей оптимизации (ANN/Triton/батчинг)
+1. Добавить `TokenDataset` + аугментации (`src/dataset/token_dataset.py`, `src/dataset/augmentations.py`).
+2. Реализовать baseline-модель `tokens -> embedding` (`src/model/embedder.py`).
+3. Запустить первое контрастивное обучение в Colab и сохранить checkpoint.
+4. Сделать базовую offline оценку retrieval (`Recall@10/100`).

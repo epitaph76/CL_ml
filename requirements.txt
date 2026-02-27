@@ -1,0 +1,12 @@
+numpy>=1.26
+PyYAML>=6.0
+tqdm>=4.66
+torch>=2.2
+torchaudio>=2.2
+transformers>=4.56
+accelerate>=0.34
+huggingface_hub>=0.24
+faiss-cpu>=1.8
+fastapi>=0.115
+uvicorn>=0.30
+

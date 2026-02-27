@@ -1,0 +1,9 @@
+index:
+  metric: ip
+  type: flat
+  embedding_dim: 256
+  normalize: true
+
+search:
+  top_k: 50
+

@@ -1,0 +1,22 @@
+experiment_name: baseline_contrastive
+seed: 42
+
+data:
+  tokens_root: data/tokens
+  splits_root: data/splits
+  batch_size: 64
+  num_workers: 4
+
+model:
+  embedding_dim: 256
+  hidden_dim: 256
+  num_layers: 2
+  num_heads: 4
+  dropout: 0.1
+
+train:
+  epochs: 10
+  lr: 3e-4
+  weight_decay: 0.01
+  temperature: 0.07
+
