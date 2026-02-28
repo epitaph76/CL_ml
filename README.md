@@ -184,13 +184,13 @@ PowerShell shortcut:
 ### Запуск обучения
 
 ```bash
-python -m src.train.train_contrastive --config configs/train.yaml --device auto --output-dir data/checkpoints
+python -m src.train.train_contrastive --config configs/train.yaml --device auto --output-dir data/checkpoints --batch-size 4 --num-workers 2
 ```
 
 Smoke-запуск (короткий прогон):
 
 ```bash
-python -m src.train.train_contrastive --config configs/train.yaml --max-steps-per-epoch 5
+python -m src.train.train_contrastive --config configs/train.yaml --max-steps-per-epoch 5 --batch-size 2 --num-workers 2
 ```
 
 ## Этап 5: Offline retrieval оценка
@@ -208,13 +208,13 @@ python -m src.train.train_contrastive --config configs/train.yaml --max-steps-pe
 ### Запуск оценки
 
 ```bash
-python -m src.index.evaluate_retrieval --split val --topk 1,10,100 --checkpoint data/checkpoints/best.pt --use-faiss
+python -m src.index.evaluate_retrieval --split val --topk 1,10,100 --checkpoint data/checkpoints/best.pt --use-faiss --batch-size 16
 ```
 
 С сохранением отчёта:
 
 ```bash
-python -m src.index.evaluate_retrieval --split val --checkpoint data/checkpoints/best.pt --output-json data/reports/val_metrics.json
+python -m src.index.evaluate_retrieval --split val --checkpoint data/checkpoints/best.pt --output-json data/reports/val_metrics.json --batch-size 16
 ```
 
 ## Ближайшие цели (следующие шаги)

@@ -49,7 +49,7 @@ class TokenEmbedder(nn.Module):
             dropout=config.dropout,
             batch_first=True,
             activation="gelu",
-            norm_first=True,
+            norm_first=False,
         )
         self.transformer = nn.TransformerEncoder(
             encoder_layer=encoder_layer,

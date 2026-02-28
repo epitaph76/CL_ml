@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import time
 from dataclasses import asdict
@@ -55,6 +56,18 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional limit for quick smoke runs.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Optional override for data.batch_size from config.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Optional override for data.num_workers from config.",
     )
     return parser.parse_args()
 
@@ -198,8 +211,18 @@ def _run_epoch(
         if tokens_a.shape[0] < 2:
             continue
 
-        emb_a = model(tokens_a, mask_a)
-        emb_b = model(tokens_b, mask_b)
+        try:
+            emb_a = model(tokens_a, mask_a)
+            emb_b = model(tokens_b, mask_b)
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            if "out of memory" in msg or "cuda error" in msg:
+                raise RuntimeError(
+                    "Training failed due to GPU memory pressure. "
+                    "Try smaller batch size: --batch-size 2 or 4, and/or "
+                    "shorter chunks during tokenization (--chunk-seconds 8)."
+                ) from exc
+            raise
         loss = _nt_xent_loss(emb_a, emb_b, temperature)
 
         if is_train:
@@ -256,8 +279,18 @@ def main() -> None:
 
     data_cfg = raw_config.get("data", {})
     train_cfg = raw_config.get("train", {})
-    batch_size = int(data_cfg.get("batch_size", 64))
-    num_workers = int(data_cfg.get("num_workers", 4))
+    config_batch_size = int(data_cfg.get("batch_size", 64))
+    config_num_workers = int(data_cfg.get("num_workers", 4))
+    batch_size = int(args.batch_size) if args.batch_size is not None else config_batch_size
+    num_workers = int(args.num_workers) if args.num_workers is not None else config_num_workers
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive.")
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative.")
+    # Colab/containers often expose fewer effective CPUs than os.cpu_count reports.
+    # Cap workers conservatively to reduce freezes/warnings.
+    cpu_limit = max(1, (os.cpu_count() or 2))
+    num_workers = min(num_workers, cpu_limit)
     temperature = float(train_cfg.get("temperature", 0.07))
     epochs = int(train_cfg.get("epochs", 10))
     learning_rate = float(train_cfg.get("lr", 3e-4))
@@ -300,6 +333,7 @@ def main() -> None:
     if val_dataset is not None:
         print(f"Val samples:   {len(val_dataset)}")
     print(f"Batch size:    {batch_size}")
+    print(f"Num workers:   {num_workers}")
     print(f"Epochs:        {epochs}")
 
     for epoch in range(1, epochs + 1):

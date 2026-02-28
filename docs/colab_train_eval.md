@@ -48,7 +48,9 @@
 !python -m src.train.train_contrastive \
   --config configs/train.yaml \
   --device auto \
-  --output-dir data/checkpoints
+  --output-dir data/checkpoints \
+  --batch-size 4 \
+  --num-workers 2
 ```
 
 Короткий smoke-запуск:
@@ -58,7 +60,9 @@
   --config configs/train.yaml \
   --device auto \
   --max-steps-per-epoch 5 \
-  --output-dir data/checkpoints_smoke
+  --output-dir data/checkpoints_smoke \
+  --batch-size 2 \
+  --num-workers 2
 ```
 
 ## 4) Посчитать retrieval-метрики
@@ -72,6 +76,7 @@ Exact search:
   --split val \
   --topk 1,10,100 \
   --device auto \
+  --batch-size 16 \
   --output-json data/reports/val_exact.json
 ```
 
@@ -84,6 +89,7 @@ Exact + FAISS:
   --split val \
   --topk 1,10,100 \
   --device auto \
+  --batch-size 16 \
   --use-faiss \
   --output-json data/reports/val_exact_faiss.json
 ```
@@ -107,4 +113,3 @@ drive.mount('/content/drive')
 !cp -r data/reports /content/drive/MyDrive/CL_ml_runs/run1/
 !cp -r configs /content/drive/MyDrive/CL_ml_runs/run1/
 ```
-

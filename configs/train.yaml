@@ -4,8 +4,8 @@ seed: 42
 data:
   tokens_root: data/tokens
   splits_root: data/splits
-  batch_size: 64
-  num_workers: 4
+  batch_size: 8
+  num_workers: 2
 
 model:
   vocab_size: 4096

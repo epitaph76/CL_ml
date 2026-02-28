@@ -69,7 +69,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=128,
+        default=16,
         help="Batch size for embedding inference.",
     )
     parser.add_argument(
