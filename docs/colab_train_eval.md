@@ -77,6 +77,8 @@ Exact search:
   --topk 1,10,100 \
   --device auto \
   --batch-size 16 \
+  --eval-protocol cross_chunk \
+  --exclude-self \
   --output-json data/reports/val_exact.json
 ```
 
@@ -90,6 +92,8 @@ Exact + FAISS:
   --topk 1,10,100 \
   --device auto \
   --batch-size 16 \
+  --eval-protocol cross_chunk \
+  --exclude-self \
   --use-faiss \
   --output-json data/reports/val_exact_faiss.json
 ```

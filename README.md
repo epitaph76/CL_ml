@@ -203,18 +203,19 @@ python -m src.train.train_contrastive --config configs/train.yaml --max-steps-pe
 - собирает query/corpus представления из токенов выбранного сплита
 - прогоняет модель и получает эмбеддинги
 - считает `Recall@K` и `MRR`
+- поддерживает более честный протокол `cross_chunk` (позитивы = другие чанки того же трека)
 - может дополнительно посчитать FAISS (`--use-faiss`)
 
 ### Запуск оценки
 
 ```bash
-python -m src.index.evaluate_retrieval --split val --topk 1,10,100 --checkpoint data/checkpoints/best.pt --use-faiss --batch-size 16
+python -m src.index.evaluate_retrieval --split val --topk 1,10,100 --checkpoint data/checkpoints/best.pt --batch-size 16 --eval-protocol cross_chunk --exclude-self --use-faiss
 ```
 
 С сохранением отчёта:
 
 ```bash
-python -m src.index.evaluate_retrieval --split val --checkpoint data/checkpoints/best.pt --output-json data/reports/val_metrics.json --batch-size 16
+python -m src.index.evaluate_retrieval --split val --checkpoint data/checkpoints/best.pt --output-json data/reports/val_metrics.json --batch-size 16 --eval-protocol cross_chunk --exclude-self
 ```
 
 ## Ближайшие цели (следующие шаги)

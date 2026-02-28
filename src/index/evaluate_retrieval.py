@@ -97,9 +97,29 @@ def _parse_args() -> argparse.Namespace:
         help="Token dropout prob for query augmentation.",
     )
     parser.add_argument(
+        "--eval-protocol",
+        type=str,
+        default="same_file_aug",
+        choices=["same_file_aug", "cross_chunk"],
+        help=(
+            "Evaluation protocol. "
+            "'same_file_aug' is easy sanity-check mode; "
+            "'cross_chunk' is stricter and uses one chunk as query, "
+            "other chunks of the same track as positives."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-self",
+        action="store_true",
+        help=(
+            "Exclude exact same chunk from retrieval candidates for each query. "
+            "Recommended with --eval-protocol cross_chunk."
+        ),
+    )
+    parser.add_argument(
         "--use-faiss",
         action="store_true",
-        help="Also compute ANN metrics using faiss.IndexFlatIP.",
+        help="Also compute retrieval metrics with faiss.IndexFlatIP (exact IP baseline).",
     )
     parser.add_argument(
         "--output-json",
@@ -140,7 +160,15 @@ def _build_eval_views(
     split_file: Path,
     aug_cfg: TokenAugmentConfig,
     seed: int,
-) -> tuple[list[str], list[torch.Tensor], list[torch.Tensor]]:
+    eval_protocol: str,
+    exclude_self: bool,
+) -> tuple[
+    list[str],
+    list[torch.Tensor],
+    list[torch.Tensor],
+    list[set[int]],
+    list[int | None],
+]:
     if not split_file.exists():
         raise FileNotFoundError(f"Split file does not exist: {split_file}")
 
@@ -148,24 +176,89 @@ def _build_eval_views(
     track_ids = load_track_ids(split_file)
     track_to_files = build_track_index(tokens_root)
 
-    kept_ids: list[str] = []
-    query_views: list[torch.Tensor] = []
-    corpus_views: list[torch.Tensor] = []
+    if eval_protocol == "same_file_aug" and exclude_self:
+        raise ValueError(
+            "--exclude-self cannot be used with --eval-protocol same_file_aug. "
+            "Use --eval-protocol cross_chunk."
+        )
 
+    if eval_protocol == "same_file_aug":
+        query_track_ids: list[str] = []
+        query_views: list[torch.Tensor] = []
+        corpus_views: list[torch.Tensor] = []
+        positive_sets: list[set[int]] = []
+        self_indices: list[int | None] = []
+
+        for track_id in track_ids:
+            files = track_to_files.get(track_id)
+            if not files:
+                continue
+            tokens = load_tokens(files[0])
+            if tokens.dim() != 2:
+                continue
+            corpus_idx = len(corpus_views)
+            query_track_ids.append(track_id)
+            corpus_views.append(tokens)
+            query_views.append(make_augmented_view(tokens, aug_cfg))
+            positive_sets.append({corpus_idx})
+            self_indices.append(corpus_idx)
+
+        if len(query_track_ids) < 2:
+            raise RuntimeError("Need at least 2 tracks in split to compute retrieval metrics.")
+        return query_track_ids, query_views, corpus_views, positive_sets, self_indices
+
+    # cross_chunk: one query chunk per track, positives are other chunks of the same track.
+    eligible_tracks: list[tuple[str, list[torch.Tensor]]] = []
     for track_id in track_ids:
         files = track_to_files.get(track_id)
         if not files:
             continue
-        tokens = load_tokens(files[0])
-        if tokens.dim() != 2:
-            continue
-        kept_ids.append(track_id)
-        corpus_views.append(tokens)
-        query_views.append(make_augmented_view(tokens, aug_cfg))
+        valid_tokens: list[torch.Tensor] = []
+        for file_path in files:
+            tokens = load_tokens(file_path)
+            if tokens.dim() == 2:
+                valid_tokens.append(tokens)
+        if len(valid_tokens) >= 2:
+            eligible_tracks.append((track_id, valid_tokens))
 
-    if len(kept_ids) < 2:
-        raise RuntimeError("Need at least 2 tracks in split to compute retrieval metrics.")
-    return kept_ids, query_views, corpus_views
+    if len(eligible_tracks) < 2:
+        raise RuntimeError(
+            "cross_chunk protocol requires at least 2 tracks with >=2 token files each "
+            "(usually from --chunk-seconds during tokenization)."
+        )
+
+    corpus_views: list[torch.Tensor] = []
+    track_to_corpus_indices: dict[str, list[int]] = {}
+    for track_id, token_list in eligible_tracks:
+        idxs: list[int] = []
+        for tokens in token_list:
+            idxs.append(len(corpus_views))
+            corpus_views.append(tokens)
+        track_to_corpus_indices[track_id] = idxs
+
+    query_track_ids = []
+    query_views = []
+    positive_sets = []
+    self_indices = []
+
+    for track_id, token_list in eligible_tracks:
+        positives = set(track_to_corpus_indices[track_id])
+        self_idx = track_to_corpus_indices[track_id][0]
+        if exclude_self:
+            positives.discard(self_idx)
+        if not positives:
+            # Should not happen for eligible tracks, but keep this guard explicit.
+            continue
+
+        query_tokens = token_list[0]
+        query_views.append(make_augmented_view(query_tokens, aug_cfg))
+        query_track_ids.append(track_id)
+        positive_sets.append(positives)
+        self_indices.append(self_idx if exclude_self else None)
+
+    if len(query_track_ids) < 2:
+        raise RuntimeError("Need at least 2 query tracks to compute retrieval metrics.")
+    return query_track_ids, query_views, corpus_views, positive_sets, self_indices
 
 
 def _encode_sequences(
@@ -188,31 +281,82 @@ def _encode_sequences(
     return torch.cat(outputs, dim=0)
 
 
-def _compute_metrics(indices: torch.Tensor, truth: torch.Tensor, topks: list[int]) -> dict[str, float]:
+def _compute_metrics(
+    indices: torch.Tensor,
+    positive_sets: list[set[int]],
+    topks: list[int],
+) -> dict[str, float]:
     metrics: dict[str, float] = {}
     n, retrieved = indices.shape
+    if len(positive_sets) != n:
+        raise ValueError("positive_sets size must match number of queries.")
 
     for k in topks:
         kk = min(k, retrieved)
-        hit = (indices[:, :kk] == truth.unsqueeze(1)).any(dim=1).float()
-        metrics[f"recall@{k}"] = float(hit.mean().item())
+        hit_values: list[float] = []
+        for i in range(n):
+            ranked = indices[i, :kk].tolist()
+            hit = any((idx >= 0 and idx in positive_sets[i]) for idx in ranked)
+            hit_values.append(1.0 if hit else 0.0)
+        metrics[f"recall@{k}"] = float(sum(hit_values) / max(len(hit_values), 1))
 
-    rr = torch.zeros(n, dtype=torch.float32)
+    rr_values: list[float] = []
     for i in range(n):
-        matches = torch.where(indices[i] == truth[i])[0]
-        if len(matches) > 0:
-            rr[i] = 1.0 / float(matches[0].item() + 1)
-    metrics["mrr"] = float(rr.mean().item())
+        reciprocal_rank = 0.0
+        for rank, idx in enumerate(indices[i].tolist(), start=1):
+            if idx >= 0 and idx in positive_sets[i]:
+                reciprocal_rank = 1.0 / float(rank)
+                break
+        rr_values.append(reciprocal_rank)
+    metrics["mrr"] = float(sum(rr_values) / max(len(rr_values), 1))
     return metrics
 
 
-def _exact_search(query_emb: torch.Tensor, corpus_emb: torch.Tensor, max_k: int) -> torch.Tensor:
+def _filter_excluded_indices(
+    indices: torch.Tensor,
+    max_k: int,
+    excluded_corpus_indices: list[int | None] | None,
+) -> torch.Tensor:
+    n, found_k = indices.shape
+    out_k = min(max_k, found_k)
+    filtered = torch.full((n, out_k), -1, dtype=torch.long)
+    if excluded_corpus_indices is None:
+        return indices[:, :out_k]
+    if len(excluded_corpus_indices) != n:
+        raise ValueError("excluded_corpus_indices size must match number of queries.")
+
+    for i in range(n):
+        banned = excluded_corpus_indices[i]
+        write = 0
+        for idx in indices[i].tolist():
+            if banned is not None and idx == banned:
+                continue
+            if write >= out_k:
+                break
+            filtered[i, write] = idx
+            write += 1
+    return filtered
+
+
+def _exact_search(
+    query_emb: torch.Tensor,
+    corpus_emb: torch.Tensor,
+    max_k: int,
+    excluded_corpus_indices: list[int | None] | None = None,
+) -> torch.Tensor:
     sims = torch.matmul(query_emb, corpus_emb.t())
-    k = min(max_k, sims.shape[1])
-    return torch.topk(sims, k=k, dim=1, largest=True, sorted=True).indices
+    extra = 1 if excluded_corpus_indices is not None else 0
+    search_k = min(max_k + extra, sims.shape[1])
+    raw = torch.topk(sims, k=search_k, dim=1, largest=True, sorted=True).indices
+    return _filter_excluded_indices(raw, max_k=max_k, excluded_corpus_indices=excluded_corpus_indices)
 
 
-def _faiss_search(query_emb: torch.Tensor, corpus_emb: torch.Tensor, max_k: int) -> torch.Tensor:
+def _faiss_search(
+    query_emb: torch.Tensor,
+    corpus_emb: torch.Tensor,
+    max_k: int,
+    excluded_corpus_indices: list[int | None] | None = None,
+) -> torch.Tensor:
     try:
         import faiss
     except ImportError as exc:
@@ -223,8 +367,11 @@ def _faiss_search(query_emb: torch.Tensor, corpus_emb: torch.Tensor, max_k: int)
     dim = c.shape[1]
     index = faiss.IndexFlatIP(dim)
     index.add(c)
-    _, idx = index.search(q, min(max_k, c.shape[0]))
-    return torch.from_numpy(idx).long()
+    extra = 1 if excluded_corpus_indices is not None else 0
+    search_k = min(max_k + extra, c.shape[0])
+    _, idx = index.search(q, search_k)
+    raw = torch.from_numpy(idx).long()
+    return _filter_excluded_indices(raw, max_k=max_k, excluded_corpus_indices=excluded_corpus_indices)
 
 
 def _build_model(
@@ -305,11 +452,13 @@ def main() -> None:
         dropout_prob=args.query_dropout,
         pad_value=0,
     )
-    track_ids, query_sequences, corpus_sequences = _build_eval_views(
+    query_track_ids, query_sequences, corpus_sequences, positive_sets, self_indices = _build_eval_views(
         tokens_root=args.tokens_root,
         split_file=split_file,
         aug_cfg=aug_cfg,
         seed=args.seed,
+        eval_protocol=args.eval_protocol,
+        exclude_self=args.exclude_self,
     )
 
     num_quantizers = int(corpus_sequences[0].shape[0])
@@ -323,24 +472,41 @@ def main() -> None:
 
     query_emb = _encode_sequences(model, query_sequences, args.batch_size, device)
     corpus_emb = _encode_sequences(model, corpus_sequences, args.batch_size, device)
-    truth = torch.arange(len(track_ids), dtype=torch.long)
 
     results: dict[str, dict[str, float]] = {}
-    exact_idx = _exact_search(query_emb, corpus_emb, max_k=max_k)
-    results["exact"] = _compute_metrics(exact_idx, truth=truth, topks=topks)
+    excluded = self_indices if args.exclude_self else None
+    exact_idx = _exact_search(
+        query_emb,
+        corpus_emb,
+        max_k=max_k,
+        excluded_corpus_indices=excluded,
+    )
+    results["exact"] = _compute_metrics(exact_idx, positive_sets=positive_sets, topks=topks)
 
     if args.use_faiss:
-        ann_idx = _faiss_search(query_emb, corpus_emb, max_k=max_k)
-        results["faiss_flat_ip"] = _compute_metrics(ann_idx, truth=truth, topks=topks)
+        ann_idx = _faiss_search(
+            query_emb,
+            corpus_emb,
+            max_k=max_k,
+            excluded_corpus_indices=excluded,
+        )
+        results["faiss_flat_ip"] = _compute_metrics(ann_idx, positive_sets=positive_sets, topks=topks)
 
-    print(f"Evaluated split={args.split} with {len(track_ids)} tracks")
+    print(
+        f"Evaluated split={args.split} protocol={args.eval_protocol} "
+        f"queries={len(query_track_ids)} corpus_items={len(corpus_sequences)} "
+        f"exclude_self={args.exclude_self}"
+    )
     print(f"Device: {device}")
     _print_table(results, topks)
 
     if args.output_json is not None:
         payload = {
             "split": args.split,
-            "num_tracks": len(track_ids),
+            "eval_protocol": args.eval_protocol,
+            "exclude_self": bool(args.exclude_self),
+            "num_queries": len(query_track_ids),
+            "num_corpus_items": len(corpus_sequences),
             "topks": topks,
             "results": results,
             "model": model_info,
