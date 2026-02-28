@@ -4,12 +4,14 @@
 
 ## Статус на сейчас
 
-Сделан старт по Этапам 0-3:
+Сделан старт по Этапам 0-5:
 
 - Этап 0: подготовлен каркас проекта, зависимости и конфиги.
 - Этап 1: добавлен скрипт формирования `train/val/test` сплитов.
 - Этап 2: добавлен рабочий CLI для токенизации аудио через MOSS.
 - Этап 3: добавлен `TokenPairDataset` с аугментациями и `collate` с padding/mask.
+- Этап 4: добавлена baseline-модель `TokenEmbedder` и тренинг-CLI для контрастивного обучения.
+- Этап 5: добавлена offline retrieval-оценка (`Recall@1/10/100`, `MRR`) с exact и optional FAISS.
 
 MOSS модель: https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer/tree/main
 
@@ -51,13 +53,19 @@ python -m src.tokenizer.moss_tokenize --help
 python -m src.dataset.build_splits --help
 ```
 
-### 3) Готовый Colab-ноутбук
+### 3) Colab-ноутбук (единый пайплайн)
 
-- Ноутбук в репозитории: `notebooks/01_moss_tokenization_colab.ipynb`
-- Прямой линк для запуска в Colab:
+- Рекомендуемый основной ноутбук:
+  `notebooks/01_moss_tokenization_colab.ipynb`
+- Он покрывает весь baseline end-to-end:
+  `audio -> tokens -> splits -> train -> Recall@1/10/100, MRR`.
+- Прямая ссылка для запуска:
   `https://colab.research.google.com/github/epitaph76/CL_ml/blob/main/notebooks/01_moss_tokenization_colab.ipynb`
+- Дополнительный (опциональный) ноутбук только для этапа train/eval:
+  `notebooks/02_train_eval_colab.ipynb`
 - Если видите `ModuleNotFoundError: No module named 'src'`, значит запуск идёт не из корня репозитория.
   В ноутбуке это уже исправлено через `cwd=/content/CL_ml` в `subprocess.run(...)`.
+- Для этапов обучения и retrieval-оценки: `docs/colab_train_eval.md`
 
 ## Текущая структура
 
@@ -72,6 +80,7 @@ CL_ml/
     index.yaml
   notebooks/
     01_moss_tokenization_colab.ipynb
+    02_train_eval_colab.ipynb
   src/
     tokenizer/
       moss_tokenize.py
@@ -80,8 +89,11 @@ CL_ml/
       augmentations.py
       token_dataset.py
     model/
+      embedder.py
     train/
+      train_contrastive.py
     index/
+      evaluate_retrieval.py
     service/
   scripts/
     run_tokenize.ps1
@@ -153,12 +165,64 @@ PowerShell shortcut:
 ./scripts/run_tokenize.ps1 -InputRoot data/raw_audio -OutputRoot data/tokens -Device auto -MaxFiles 10
 ```
 
+## Этап 4: Baseline embedder и обучение
+
+### Что сделано
+
+Скрипты:
+- `src/model/embedder.py`
+- `src/train/train_contrastive.py`
+
+`TokenEmbedder` принимает токены `[B,Q,T]` + `mask [B,T]` и возвращает L2-нормированные эмбеддинги треков.
+
+`train_contrastive.py`:
+- читает `configs/train.yaml`
+- строит `TokenPairDataset` по `train/val` сплитам
+- обучает модель с NT-Xent (InfoNCE)
+- сохраняет `best.pt`, `last.pt`, `history.json`
+
+### Запуск обучения
+
+```bash
+python -m src.train.train_contrastive --config configs/train.yaml --device auto --output-dir data/checkpoints
+```
+
+Smoke-запуск (короткий прогон):
+
+```bash
+python -m src.train.train_contrastive --config configs/train.yaml --max-steps-per-epoch 5
+```
+
+## Этап 5: Offline retrieval оценка
+
+### Что сделано
+
+Скрипт: `src/index/evaluate_retrieval.py`
+
+Он:
+- собирает query/corpus представления из токенов выбранного сплита
+- прогоняет модель и получает эмбеддинги
+- считает `Recall@K` и `MRR`
+- может дополнительно посчитать FAISS (`--use-faiss`)
+
+### Запуск оценки
+
+```bash
+python -m src.index.evaluate_retrieval --split val --topk 1,10,100 --checkpoint data/checkpoints/best.pt --use-faiss
+```
+
+С сохранением отчёта:
+
+```bash
+python -m src.index.evaluate_retrieval --split val --checkpoint data/checkpoints/best.pt --output-json data/reports/val_metrics.json
+```
+
 ## Ближайшие цели (следующие шаги)
 
-1. Реализовать baseline-модель `tokens -> embedding` (`src/model/embedder.py`).
-2. Запустить первое контрастивное обучение в Colab и сохранить checkpoint.
-3. Сделать базовую offline оценку retrieval (`Recall@10/100`).
-4. Добавить FAISS baseline и сравнение exact vs ANN.
+1. Запустить обучение в Colab/GPU на реальных токенах и получить стабильный `best.pt`.
+2. Зафиксировать первую таблицу `Recall@1/10/100`, `MRR` на `val/test`.
+3. Добавить baseline индексы ANN (например, IVF/HNSW) и сравнить с exact/IndexFlat.
+4. Добавить замеры `p50/p95 latency` и `throughput` для поиска.
 
 ## Связка с вакансией Ozon
 
