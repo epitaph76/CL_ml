@@ -1,2 +1,1 @@
-"""Vector index utilities will live here."""
-
+"""Offline index/evaluation utilities."""

@@ -8,6 +8,8 @@ data:
   num_workers: 4
 
 model:
+  vocab_size: 4096
+  max_quantizers: 32
   embedding_dim: 256
   hidden_dim: 256
   num_layers: 2
@@ -19,4 +21,3 @@ train:
   lr: 3e-4
   weight_decay: 0.01
   temperature: 0.07
-

@@ -1,2 +1,1 @@
-"""Training scripts will live here."""
-
+"""Training entrypoints for contrastive retrieval models."""
